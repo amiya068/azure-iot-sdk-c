@@ -226,46 +226,47 @@ static void set_message_queue_create_expected_calls()
     STRICT_EXPECTED_CALL(singlylinkedlist_create());
 }
 
-static void set_dequeue_message_and_fire_callback_expected_calls(size_t number_of_items, size_t item_to_dequeue, bool should_retry)
+static void set_dequeue_message_and_fire_callback_expected_calls()
 {
-	if (number_of_items == 0)
-	{
-		STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(IGNORED_PTR_ARG)).SetReturn(NULL);
-	}
-	else
-	{
-		size_t i;
-
-		STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(IGNORED_PTR_ARG));
-
-		for (i = 0; i < number_of_items; i++)
-		{
-			STRICT_EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
-
-			if (i == item_to_dequeue)
-			{
-				STRICT_EXPECTED_CALL(singlylinkedlist_remove(IGNORED_PTR_ARG, IGNORED_PTR_ARG));
-
-				if (should_retry)
-				{
-					STRICT_EXPECTED_CALL(singlylinkedlist_add(IGNORED_PTR_ARG, IGNORED_PTR_ARG));
-				}
-				else
-				{
-					STRICT_EXPECTED_CALL(free(IGNORED_PTR_ARG));
-				}
-
-				break;
-			}
-
-			STRICT_EXPECTED_CALL(singlylinkedlist_get_next_item(IGNORED_PTR_ARG));
-		}
-	}
+	STRICT_EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
+	STRICT_EXPECTED_CALL(singlylinkedlist_remove(IGNORED_PTR_ARG, IGNORED_PTR_ARG));
+	STRICT_EXPECTED_CALL(free(IGNORED_PTR_ARG));
 }
 
-static void set_on_message_processing_completed_callback_expected_calls(int message_order_in_list, bool should_retry)
+static void set_retry_sending_message_expected_calls()
 {
-	set_dequeue_message_and_fire_callback_expected_calls(1, message_order_in_list, should_retry);
+	STRICT_EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
+	STRICT_EXPECTED_CALL(singlylinkedlist_remove(IGNORED_PTR_ARG, IGNORED_PTR_ARG));
+	STRICT_EXPECTED_CALL(singlylinkedlist_add(IGNORED_PTR_ARG, IGNORED_PTR_ARG));
+}
+
+static void set_on_message_processing_completed_callback_expected_calls(int number_of_messages, int message_order_in_list, bool should_retry)
+{
+	int i;
+
+	STRICT_EXPECTED_CALL(singlylinkedlist_find(IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG));
+
+	for (i = 0; i < number_of_messages; i++)
+	{
+		// Invoked by singlylinkedlist_find.
+		STRICT_EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
+
+		if (i == message_order_in_list) break;
+	}
+
+	if (i == message_order_in_list)
+	{
+		STRICT_EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
+
+		if (should_retry)
+		{
+			set_retry_sending_message_expected_calls();
+		}
+		else
+		{
+			set_dequeue_message_and_fire_callback_expected_calls();
+		}
+	}
 }
 
 static void set_message_queue_remove_all_expected_calls(size_t number_of_messages_pending, size_t number_of_messages_in_progress)
@@ -276,8 +277,7 @@ static void set_message_queue_remove_all_expected_calls(size_t number_of_message
 
 	for (i = 0; i < number_of_messages_pending; i++)
 	{
-		STRICT_EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
-		set_dequeue_message_and_fire_callback_expected_calls(number_of_messages_pending - i, 0, false);
+		set_dequeue_message_and_fire_callback_expected_calls();
 		STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(IGNORED_PTR_ARG));
 	}
 
@@ -285,8 +285,7 @@ static void set_message_queue_remove_all_expected_calls(size_t number_of_message
 
 	for (i = 0; i < number_of_messages_in_progress; i++)
 	{
-		STRICT_EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
-		set_dequeue_message_and_fire_callback_expected_calls(number_of_messages_in_progress - i, 0, false);
+		set_dequeue_message_and_fire_callback_expected_calls();
 		STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(IGNORED_PTR_ARG));
 	}
 }
@@ -354,7 +353,7 @@ static void set_process_timeouts_expected_calls(MESSAGE_QUEUE_HANDLE mq, time_t 
 			if (j < expiration_profile->expired_pending_messages_size && i == expiration_profile->expired_pending_messages[j])
 			{
 				STRICT_EXPECTED_CALL(get_difftime(IGNORED_NUM_ARG, IGNORED_NUM_ARG)).SetReturn(expiration_profile->max_message_enqueued_time_secs + 1);
-				set_dequeue_message_and_fire_callback_expected_calls(number_of_messages_pending, 0, false);
+				set_dequeue_message_and_fire_callback_expected_calls();
 				number_of_messages_pending--;
 				j++;
 			}
@@ -376,7 +375,8 @@ static void set_process_timeouts_expected_calls(MESSAGE_QUEUE_HANDLE mq, time_t 
 			if (j < expiration_profile->expired_enqueued_in_progress_messages_size && i == expiration_profile->expired_enqueued_in_progress_messages[j])
 			{
 				STRICT_EXPECTED_CALL(get_difftime(IGNORED_NUM_ARG, IGNORED_NUM_ARG)).SetReturn(expiration_profile->max_message_enqueued_time_secs + 1);
-				set_dequeue_message_and_fire_callback_expected_calls(number_of_messages_in_progress, expiration_profile->expired_enqueued_in_progress_messages[j] - i, false);
+				set_dequeue_message_and_fire_callback_expected_calls();
+				//set_dequeue_message_and_fire_callback_expected_calls(number_of_messages_in_progress, expiration_profile->expired_enqueued_in_progress_messages[j] - i, false);
 				number_of_messages_in_progress--;
 				j++;
 			}
@@ -402,7 +402,7 @@ static void set_process_timeouts_expected_calls(MESSAGE_QUEUE_HANDLE mq, time_t 
 			if (j < expiration_profile->expired_in_progress_messages_size && i == expiration_profile->expired_in_progress_messages[j])
 			{
 				STRICT_EXPECTED_CALL(get_difftime(IGNORED_NUM_ARG, IGNORED_NUM_ARG)).SetReturn(expiration_profile->max_message_processing_time_secs + 1);
-				set_dequeue_message_and_fire_callback_expected_calls(number_of_messages_in_progress, 0, false);
+				set_dequeue_message_and_fire_callback_expected_calls();
 				number_of_messages_in_progress--;
 				j++;
 			}
@@ -526,6 +526,7 @@ static void register_umock_alias_types()
     REGISTER_UMOCK_ALIAS_TYPE(pfSetOption, void*);
 	REGISTER_UMOCK_ALIAS_TYPE(SINGLYLINKEDLIST_HANDLE, void*);
 	REGISTER_UMOCK_ALIAS_TYPE(LIST_ITEM_HANDLE, void*);
+	REGISTER_UMOCK_ALIAS_TYPE(LIST_MATCH_FUNCTION, void*);
 	REGISTER_UMOCK_ALIAS_TYPE(MQ_MESSAGE_HANDLE, void*);
 }
 
@@ -1376,7 +1377,7 @@ TEST_FUNCTION(on_message_processing_completed_callback_MESSAGE_not_present)
 	crank_message_queue(mq, TEST_current_time, 1, 0, NULL);
 
 	umock_c_reset_all_calls();
-	set_on_message_processing_completed_callback_expected_calls(-1, false);
+	set_on_message_processing_completed_callback_expected_calls(1, -1, false);
 
 	// act
 	TEST_on_process_message_callback_on_process_message_completed_callback(mq, TEST_SOME_OTHER_MESSAGE, MESSAGE_QUEUE_SUCCESS, TEST_REASON);
@@ -1408,7 +1409,7 @@ TEST_FUNCTION(on_message_processing_completed_callback_success)
 	ASSERT_ARE_EQUAL(void_ptr, (void*)TEST_USER_CONTEXT, (void*)TEST_on_process_message_callback_context);
 
 	umock_c_reset_all_calls();
-	set_on_message_processing_completed_callback_expected_calls(0, false);
+	set_on_message_processing_completed_callback_expected_calls(1, 0, false);
 
 	// act
 	TEST_on_process_message_callback_on_process_message_completed_callback(mq, TEST_on_process_message_callback_message, MESSAGE_QUEUE_SUCCESS, TEST_REASON);
@@ -1425,7 +1426,6 @@ TEST_FUNCTION(on_message_processing_completed_callback_success)
 	message_queue_destroy(mq);
 }
 
-// Tests_SRS_MESSAGE_QUEUE_09_046: [If `result` is MESSAGE_QUEUE_RETRYABLE_ERROR and `mq_item->number_of_attempts` shall be incremented by 1]
 // Tests_SRS_MESSAGE_QUEUE_09_047: [If `result` is MESSAGE_QUEUE_RETRYABLE_ERROR and `mq_item->number_of_attempts` is less than or equal `message_queue->max_retry_count`, the `message` shall be moved to `message_queue->pending` to be re-sent]
 // Tests_SRS_MESSAGE_QUEUE_09_048: [If `result` is MESSAGE_QUEUE_RETRYABLE_ERROR and `mq_item->number_of_attempts` is greater than `message_queue->max_retry_count`, result shall be changed to MESSAGE_QUEUE_ERROR]
 TEST_FUNCTION(on_message_processing_completed_callback_RETRYABLE_ERROR)
@@ -1438,11 +1438,11 @@ TEST_FUNCTION(on_message_processing_completed_callback_RETRYABLE_ERROR)
 	crank_message_queue(mq, TEST_current_time, 1, 0, NULL);
 
 	umock_c_reset_all_calls();
-	set_on_message_processing_completed_callback_expected_calls(0, true);
+	set_on_message_processing_completed_callback_expected_calls(1, 0, true);
 	set_message_queue_do_work_expected_calls(mq, TEST_current_time, 1, 0, &TEST_test_message_expiration_profile);
-	set_on_message_processing_completed_callback_expected_calls(0, true);
+	set_on_message_processing_completed_callback_expected_calls(1, 0, true);
 	set_message_queue_do_work_expected_calls(mq, TEST_current_time, 1, 0, &TEST_test_message_expiration_profile);
-	set_on_message_processing_completed_callback_expected_calls(0, false);
+	set_on_message_processing_completed_callback_expected_calls(1, 0, false);
 
 	// act
 	TEST_on_process_message_callback_on_process_message_completed_callback(mq, 

@@ -49,75 +49,73 @@ typedef struct MESSAGE_QUEUE_ITEM_TAG
 
 // ---------- Helper Functions ---------- //
 
-static bool dequeue_message_and_fire_callback(MESSAGE_QUEUE_HANDLE message_queue, SINGLYLINKEDLIST_HANDLE list, MQ_MESSAGE_HANDLE message, MESSAGE_QUEUE_RESULT result, void* reason)
+static bool find_item_by_message_ptr(LIST_ITEM_HANDLE list_item, const void* match_context)
 {
+	MESSAGE_QUEUE_ITEM* current_item = (MESSAGE_QUEUE_ITEM*)singlylinkedlist_item_get_value(list_item);
+	MQ_MESSAGE_HANDLE* target_item = (MQ_MESSAGE_HANDLE*)match_context;
 
-	LIST_ITEM_HANDLE list_item = singlylinkedlist_get_head_item(list);
-
-	while (list_item != NULL)
-	{
-		MESSAGE_QUEUE_ITEM* mq_item = (MESSAGE_QUEUE_ITEM*)singlylinkedlist_item_get_value(list_item);
-
-		// Codes_SRS_MESSAGE_QUEUE_09_044: [If `message` is not present in `message_queue->in_progress`, it shall be ignored]
-		if (mq_item->message == message)
-		{
-			bool is_retrying;
-
-			// Codes_SRS_MESSAGE_QUEUE_09_045: [If `message` is present in `message_queue->in_progress`, it shall be removed]
-			(void)singlylinkedlist_remove(list, list_item);
-
-			if (result == MESSAGE_QUEUE_RETRYABLE_ERROR)
-			{
-				// Codes_SRS_MESSAGE_QUEUE_09_046: [If `result` is MESSAGE_QUEUE_RETRYABLE_ERROR and `mq_item->number_of_attempts` shall be incremented by 1]
-				mq_item->number_of_attempts++;
-
-				// Codes_SRS_MESSAGE_QUEUE_09_047: [If `result` is MESSAGE_QUEUE_RETRYABLE_ERROR and `mq_item->number_of_attempts` is less than or equal `message_queue->max_retry_count`, the `message` shall be moved to `message_queue->pending` to be re-sent]
-				if (mq_item->number_of_attempts <= message_queue->max_retry_count)
-				{
-					if (singlylinkedlist_add(message_queue->pending, (const void*)mq_item) == NULL)
-					{
-						LogError("Failed retrying sending message (failed moving it back to pending list)");
-						is_retrying = false;
-					}
-					else
-					{
-						is_retrying = true;
-					}
-				}
-				else
-				{
-					// Codes_SRS_MESSAGE_QUEUE_09_048: [If `result` is MESSAGE_QUEUE_RETRYABLE_ERROR and `mq_item->number_of_attempts` is greater than `message_queue->max_retry_count`, result shall be changed to MESSAGE_QUEUE_ERROR]
-					result = MESSAGE_QUEUE_ERROR;
-					is_retrying = false;
-				}
-
-			}
-			else
-			{
-				is_retrying = false;
-			}
-
-			if (!is_retrying)
-			{
-				// Codes_SRS_MESSAGE_QUEUE_09_049: [Otherwise `mq_item->on_message_processing_completed_callback` shall be invoked passing `mq_item->message`, `result`, `reason` and `mq_item->user_context`]
-				if (mq_item->on_message_processing_completed_callback != NULL)
-				{
-					mq_item->on_message_processing_completed_callback(mq_item->message, result, reason, mq_item->user_context);
-				}
-
-				// Codes_SRS_MESSAGE_QUEUE_09_050: [The `mq_item` related to `message` shall be freed]
-				free(mq_item);
-			}
-
-			break;
-		}
-		
-		list_item = singlylinkedlist_get_next_item(list_item);
-	}
-
-	return (list_item != NULL);
+	return (current_item->message == target_item);
 }
 
+static void fire_message_callback(MESSAGE_QUEUE_ITEM* mq_item, MESSAGE_QUEUE_RESULT result, void* reason)
+{
+	if (mq_item->on_message_processing_completed_callback != NULL)
+	{
+		if (result == MESSAGE_QUEUE_RETRYABLE_ERROR)
+		{
+			result = MESSAGE_QUEUE_ERROR;
+		}
+
+		mq_item->on_message_processing_completed_callback(mq_item->message, result, reason, mq_item->user_context);
+	}
+}
+
+static bool should_retry_sending(MESSAGE_QUEUE_HANDLE message_queue, MESSAGE_QUEUE_ITEM* mq_item, MESSAGE_QUEUE_RESULT result)
+{
+	return (result == MESSAGE_QUEUE_RETRYABLE_ERROR && mq_item->number_of_attempts <= message_queue->max_retry_count);
+}
+
+static int retry_sending_message(MESSAGE_QUEUE_HANDLE message_queue, LIST_ITEM_HANDLE list_item)
+{
+	int result;
+	MESSAGE_QUEUE_ITEM* mq_item;
+	
+	mq_item = (MESSAGE_QUEUE_ITEM*)singlylinkedlist_item_get_value(list_item);
+
+	if (singlylinkedlist_remove(message_queue->in_progress, list_item))
+	{
+		LogError("Failed removing message from in-progress list");
+		result = __FAILURE__;
+	}
+	else if (singlylinkedlist_add(message_queue->pending, (const void*)mq_item) == NULL)
+	{
+		LogError("Failed moving message back to pending list");
+		result = __FAILURE__;
+	}
+	else
+	{
+		result = RESULT_OK;
+	}
+
+	return result;
+}
+
+static void dequeue_message_and_fire_callback(SINGLYLINKEDLIST_HANDLE list, LIST_ITEM_HANDLE list_item, MESSAGE_QUEUE_RESULT result, void* reason)
+{
+	MESSAGE_QUEUE_ITEM* mq_item = (MESSAGE_QUEUE_ITEM*)singlylinkedlist_item_get_value(list_item);
+
+	// Codes_SRS_MESSAGE_QUEUE_09_045: [If `message` is present in `message_queue->in_progress`, it shall be removed]
+	if (singlylinkedlist_remove(list, list_item))
+	{
+		LogError("failed removing message from list (%p)", list);
+	}
+	
+	// Codes_SRS_MESSAGE_QUEUE_09_049: [Otherwise `mq_item->on_message_processing_completed_callback` shall be invoked passing `mq_item->message`, `result`, `reason` and `mq_item->user_context`]
+	fire_message_callback(mq_item, result, reason);
+
+	// Codes_SRS_MESSAGE_QUEUE_09_050: [The `mq_item` related to `message` shall be freed]
+	free(mq_item);
+}
 
 static void on_process_message_completed_callback(MESSAGE_QUEUE_HANDLE message_queue, MQ_MESSAGE_HANDLE message, MESSAGE_QUEUE_RESULT result, USER_DEFINED_REASON reason)
 {
@@ -126,9 +124,26 @@ static void on_process_message_completed_callback(MESSAGE_QUEUE_HANDLE message_q
 	{
 		LogError("on_process_message_completed_callback invoked with NULL arguments (message=%p, message_queue=%p)", message, message_queue);
 	}
-	else if (!dequeue_message_and_fire_callback(message_queue, message_queue->in_progress, message, result, reason))
+	else
 	{
-		LogError("on_process_message_completed_callback invoked for message not in in-progress list (%p)", message);
+		LIST_ITEM_HANDLE list_item;
+		
+		if ((list_item = singlylinkedlist_find(message_queue->in_progress, find_item_by_message_ptr, message)) == NULL)
+		{
+			// Codes_SRS_MESSAGE_QUEUE_09_044: [If `message` is not present in `message_queue->in_progress`, it shall be ignored]
+			LogError("on_process_message_completed_callback invoked for a message not in the in-progress list (%p)", message);
+		}
+		else
+		{
+			MESSAGE_QUEUE_ITEM* mq_item = (MESSAGE_QUEUE_ITEM*)singlylinkedlist_item_get_value(list_item);
+		
+			// Codes_SRS_MESSAGE_QUEUE_09_047: [If `result` is MESSAGE_QUEUE_RETRYABLE_ERROR and `mq_item->number_of_attempts` is less than or equal `message_queue->max_retry_count`, the `message` shall be moved to `message_queue->pending` to be re-sent]
+			// Codes_SRS_MESSAGE_QUEUE_09_048: [If `result` is MESSAGE_QUEUE_RETRYABLE_ERROR and `mq_item->number_of_attempts` is greater than `message_queue->max_retry_count`, result shall be changed to MESSAGE_QUEUE_ERROR]
+			if (!should_retry_sending(message_queue, mq_item, result) || retry_sending_message(message_queue, list_item) != RESULT_OK)
+			{
+				dequeue_message_and_fire_callback(message_queue->in_progress, list_item, result, reason);
+			}
+		}
 	}
 }
 
@@ -161,7 +176,7 @@ static void process_timeouts(MESSAGE_QUEUE_HANDLE message_queue)
 				else if (get_difftime(current_time, mq_item->enqueue_time) >= message_queue->max_message_enqueued_time_secs)
 				{
 					// Codes_SRS_MESSAGE_QUEUE_09_036: [If any items are in `message_queue` lists for `message_queue->max_message_enqueued_time_secs` or more, they shall be removed and `message_queue->on_message_processing_completed_callback` invoked with MESSAGE_QUEUE_TIMEOUT]
-					(void)dequeue_message_and_fire_callback(message_queue, message_queue->pending, mq_item->message, MESSAGE_QUEUE_TIMEOUT, NULL);
+					dequeue_message_and_fire_callback(message_queue->pending, current_list_item, MESSAGE_QUEUE_TIMEOUT, NULL);
 				}
 				else
 				{
@@ -186,7 +201,7 @@ static void process_timeouts(MESSAGE_QUEUE_HANDLE message_queue)
 				else if (get_difftime(current_time, mq_item->enqueue_time) >= message_queue->max_message_enqueued_time_secs)
 				{
 					// Codes_SRS_MESSAGE_QUEUE_09_038: [If any items are in `message_queue->in_progress` for `message_queue->max_message_processing_time_secs` or more, they shall be removed and `message_queue->on_message_processing_completed_callback` invoked with MESSAGE_QUEUE_TIMEOUT]
-					(void)dequeue_message_and_fire_callback(message_queue, message_queue->in_progress, mq_item->message, MESSAGE_QUEUE_TIMEOUT, NULL);
+					dequeue_message_and_fire_callback(message_queue->in_progress, current_list_item, MESSAGE_QUEUE_TIMEOUT, NULL);
 				}
 			}
 		}
@@ -209,7 +224,7 @@ static void process_timeouts(MESSAGE_QUEUE_HANDLE message_queue)
 				}
 				else if (get_difftime(current_time, mq_item->processing_start_time) >= message_queue->max_message_processing_time_secs)
 				{
-					(void)dequeue_message_and_fire_callback(message_queue, message_queue->in_progress, mq_item->message, MESSAGE_QUEUE_TIMEOUT, NULL);
+					dequeue_message_and_fire_callback(message_queue->in_progress, current_list_item, MESSAGE_QUEUE_TIMEOUT, NULL);
 				}
 				else
 				{
@@ -277,6 +292,8 @@ static void process_pending_messages(MESSAGE_QUEUE_HANDLE message_queue)
 		}
 		else
 		{
+			mq_item->number_of_attempts++;
+
 			// Codes_SRS_MESSAGE_QUEUE_09_043: [If no failures occur, `message_queue->on_process_message_callback` shall be invoked passing `mq_item->message` and `on_process_message_completed_callback`]
 			message_queue->on_process_message_callback(message_queue, mq_item->message, on_process_message_completed_callback, mq_item->user_context);
 		}
@@ -338,7 +355,6 @@ static void destroyOption(const char* name, const void* value)
 
 void message_queue_remove_all(MESSAGE_QUEUE_HANDLE message_queue)
 {
-
 	// Codes_SRS_MESSAGE_QUEUE_09_026: [If `message_queue` is NULL, message_queue_retrieve_options shall return]
 	if (message_queue != NULL)
 	{
@@ -347,22 +363,114 @@ void message_queue_remove_all(MESSAGE_QUEUE_HANDLE message_queue)
 		// Codes_SRS_MESSAGE_QUEUE_09_027: [Each `mq_item` in `message_queue->pending` and `message_queue->in_progress` lists shall be removed] 
 		while ((list_item = singlylinkedlist_get_head_item(message_queue->in_progress)) != NULL)
 		{
-			MESSAGE_QUEUE_ITEM* mq_item = (MESSAGE_QUEUE_ITEM*)singlylinkedlist_item_get_value(list_item);
-
 			// Codes_SRS_MESSAGE_QUEUE_09_028: [`message_queue->on_message_processing_completed_callback` shall be invoked with MESSAGE_QUEUE_CANCELLED for each `mq_item` removed]
 			// Codes_SRS_MESSAGE_QUEUE_09_029: [Each `mq_item` shall be freed] 
-			(void)dequeue_message_and_fire_callback(message_queue, message_queue->in_progress, mq_item->message, MESSAGE_QUEUE_CANCELLED, NULL);
+			dequeue_message_and_fire_callback(message_queue->in_progress, list_item, MESSAGE_QUEUE_CANCELLED, NULL);
 		}
 
 		while ((list_item = singlylinkedlist_get_head_item(message_queue->pending)) != NULL)
 		{
-			MESSAGE_QUEUE_ITEM* mq_item = (MESSAGE_QUEUE_ITEM*)singlylinkedlist_item_get_value(list_item);
-
 			// Codes_SRS_MESSAGE_QUEUE_09_028: [`message_queue->on_message_processing_completed_callback` shall be invoked with MESSAGE_QUEUE_CANCELLED for each `mq_item` removed]
 			// Codes_SRS_MESSAGE_QUEUE_09_029: [Each `mq_item` shall be freed] 
-			(void)dequeue_message_and_fire_callback(message_queue, message_queue->pending, mq_item->message, MESSAGE_QUEUE_CANCELLED, NULL);
+			dequeue_message_and_fire_callback(message_queue->pending, list_item, MESSAGE_QUEUE_CANCELLED, NULL);
 		}
 	}
+}
+
+static int move_messages_between_lists(SINGLYLINKEDLIST_HANDLE from_list, SINGLYLINKEDLIST_HANDLE to_list)
+{
+	int result;
+	LIST_ITEM_HANDLE list_item;
+
+	result = RESULT_OK;
+
+	while ((list_item = singlylinkedlist_get_head_item(from_list)) != NULL)
+	{
+		if (singlylinkedlist_remove(from_list, list_item) != 0)
+		{
+			LogError("failed removing message from list");
+			result = __FAILURE__;
+		}
+		else
+		{
+			MESSAGE_QUEUE_ITEM* mq_item = (MESSAGE_QUEUE_ITEM*)singlylinkedlist_item_get_value(list_item);
+
+			if (singlylinkedlist_add(to_list, (const void*)mq_item) != 0)
+			{
+				LogError("failed moving message to list");
+
+				fire_message_callback(mq_item, MESSAGE_QUEUE_CANCELLED, NULL);
+
+				free(mq_item);
+
+				result = __FAILURE__;
+
+				break;
+			}
+			else
+			{
+				mq_item->number_of_attempts = 0;
+				mq_item->processing_start_time = INDEFINITE_TIME;
+			}
+		}
+	}
+
+	return result;
+}
+
+int message_queue_move_all_back_to_pending(MESSAGE_QUEUE_HANDLE message_queue)
+{
+	int result;
+
+	if (message_queue == NULL)
+	{
+		LogError("invalid argument (message_queue is NULL)");
+		result = __FAILURE__;
+	}
+	else
+	{
+		SINGLYLINKEDLIST_HANDLE temp_list;
+
+		if ((temp_list = singlylinkedlist_create()) == NULL)
+		{
+			LogError("failed creating temporary list");
+			result = __FAILURE__;
+		}
+		else
+		{
+			if (move_messages_between_lists(message_queue->in_progress, temp_list) != 0)
+			{
+				LogError("failed moving in-progress message to temporary list");
+				result = __FAILURE__;
+			}
+			else if (move_messages_between_lists(message_queue->pending, temp_list) != 0)
+			{
+				LogError("failed moving pending message to temporary list");
+				result = __FAILURE__;
+			}
+			else if (move_messages_between_lists(temp_list, message_queue->pending) != 0)
+			{
+				LogError("failed moving pending message to temporary list");
+				result = __FAILURE__;
+			}
+			else
+			{
+				result = RESULT_OK;
+			}
+
+			if (result != RESULT_OK)
+			{
+				LIST_ITEM_HANDLE list_item;
+
+				while ((list_item = singlylinkedlist_get_head_item(temp_list)) != NULL)
+				{
+					dequeue_message_and_fire_callback(temp_list, list_item, MESSAGE_QUEUE_CANCELLED, NULL);
+				}
+			}
+		}
+	}
+
+	return result;
 }
 
 void message_queue_destroy(MESSAGE_QUEUE_HANDLE message_queue)
@@ -370,7 +478,6 @@ void message_queue_destroy(MESSAGE_QUEUE_HANDLE message_queue)
 	// Codes_SRS_MESSAGE_QUEUE_09_013: [If `message_queue` is NULL, message_queue_destroy shall return immediately]
 	if (message_queue != NULL)
 	{
-
 		// Codes_SRS_MESSAGE_QUEUE_09_014: [message_queue_destroy shall invoke message_queue_remove_all]
 		message_queue_remove_all(message_queue);
 

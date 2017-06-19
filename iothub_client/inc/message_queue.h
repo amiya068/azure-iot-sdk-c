@@ -93,6 +93,18 @@ MOCKABLE_FUNCTION(, void, message_queue_destroy, MESSAGE_QUEUE_HANDLE, message_q
 MOCKABLE_FUNCTION(, int, message_queue_add, MESSAGE_QUEUE_HANDLE, message_queue, MQ_MESSAGE_HANDLE, message, MESSAGE_PROCESSING_COMPLETED_CALLBACK, on_message_processing_completed_callback, void*, user_context);
 
 /**
+* @brief	Causes all messages in-progress to be moved back to the beginning of the pending list.
+*
+* @remarks	If on_message_process_completed_callback is invoked for any of message not in in-progress, it is disregarded.
+*           Messages are queued back into the pending list in a way they will be sent first when message_queue_do_work is invoked again.
+*
+* @param	message_queue	A @c MESSAGE_QUEUE_HANDLE obtained using message_queue_create.
+*
+* @returns	Zero if the no errors occur, non-zero otherwise.
+*/
+MOCKABLE_FUNCTION(, int, message_queue_move_all_back_to_pending, MESSAGE_QUEUE_HANDLE, message_queue);
+
+/**
 * @brief	Causes all messages pending to be sent and in-progress to be flushed back to the user through @c on_message_processing_completed_callback.
 *
 * @remarks	@c on_message_processing_completed_callback gets invoked with @c result set as MESSAGE_QUEUE_CANCELLED and @c reason set to NULL.
