@@ -25,9 +25,8 @@ extern "C"
 	typedef enum TWIN_REPORT_STATE_RESULT_TAG
 	{
 		TWIN_REPORT_STATE_RESULT_OK,
-		TWIN_REPORT_STATE_RESULT_ERROR_CANNOT_PARSE,
-		TWIN_REPORT_STATE_RESULT_ERROR_FAIL_SENDING,
-		TWIN_REPORT_STATE_RESULT_ERROR_TIMEOUT,
+		TWIN_REPORT_STATE_RESULT_ERROR,
+		TWIN_REPORT_STATE_RESULT_TIMEOUT,
 		TWIN_REPORT_STATE_RESULT_MESSENGER_DESTROYED
 	} TWIN_REPORT_STATE_RESULT;
 
@@ -46,21 +45,22 @@ extern "C"
 		TWIN_UPDATE_TYPE_COMPLETE
  	} TWIN_UPDATE_TYPE;
 
-	typedef void(*ON_TWIN_MESSENGER_STATE_CHANGED_CALLBACK)(void* context, TWIN_MESSENGER_STATE previous_state, TWIN_MESSENGER_STATE new_state);
-	typedef void(*ON_TWIN_MESSENGER_REPORT_STATE_COMPLETE_CALLBACK)(TWIN_REPORT_STATE_RESULT result, int status_code, void* context);
-	typedef void(*ON_TWIN_STATE_UPDATE_CALLBACK)(TWIN_UPDATE_TYPE update_type, const char* payload, size_t size, void* context);
+	typedef void(*TWIN_MESSENGER_STATE_CHANGED_CALLBACK)(void* context, TWIN_MESSENGER_STATE previous_state, TWIN_MESSENGER_STATE new_state);
+	typedef void(*TWIN_MESSENGER_REPORT_STATE_COMPLETE_CALLBACK)(TWIN_REPORT_STATE_RESULT result, int status_code, void* context);
+	typedef void(*TWIN_STATE_UPDATE_CALLBACK)(TWIN_UPDATE_TYPE update_type, const char* payload, size_t size, void* context);
 
-	typedef struct MESSENGER_CONFIG_TAG
+	typedef struct TWIN_MESSENGER_CONFIG_TAG
 	{
+		const char* client_version;
 		const char* device_id;
 		char* iothub_host_fqdn;
-		ON_TWIN_MESSENGER_STATE_CHANGED_CALLBACK on_state_changed_callback;
+		TWIN_MESSENGER_STATE_CHANGED_CALLBACK on_state_changed_callback;
 		void* on_state_changed_context;
-	} MESSENGER_CONFIG;
+	} TWIN_MESSENGER_CONFIG;
 
 	MOCKABLE_FUNCTION(, TWIN_MESSENGER_HANDLE, twin_messenger_create, const TWIN_MESSENGER_CONFIG*, messenger_config);
-	MOCKABLE_FUNCTION(, int, twin_messenger_report_state_async, TWIN_MESSENGER_HANDLE, messenger_handle, CONSTBUFFER_HANDLE, data, ON_TWIN_MESSENGER_REPORT_STATE_COMPLETE_CALLBACK, on_report_state_complete_callback, const void*, context);
-	MOCKABLE_FUNCTION(, int, twin_messenger_subscribe, TWIN_MESSENGER_HANDLE, messenger_handle, ON_TWIN_STATE_UPDATE_CALLBACK, on_twin_state_update_callback, void*, context);
+	MOCKABLE_FUNCTION(, int, twin_messenger_report_state_async, TWIN_MESSENGER_HANDLE, messenger_handle, CONSTBUFFER_HANDLE, data, TWIN_MESSENGER_REPORT_STATE_COMPLETE_CALLBACK, on_report_state_complete_callback, const void*, context);
+	MOCKABLE_FUNCTION(, int, twin_messenger_subscribe, TWIN_MESSENGER_HANDLE, messenger_handle, TWIN_STATE_UPDATE_CALLBACK, on_twin_state_update_callback, void*, context);
 	MOCKABLE_FUNCTION(, int, twin_messenger_unsubscribe, TWIN_MESSENGER_HANDLE, messenger_handle);
 	MOCKABLE_FUNCTION(, int, twin_messenger_get_send_status, TWIN_MESSENGER_HANDLE, messenger_handle, TWIN_MESSENGER_SEND_STATUS*, send_status);
 	MOCKABLE_FUNCTION(, int, twin_messenger_start, TWIN_MESSENGER_HANDLE, messenger_handle, SESSION_HANDLE, session_handle); 
