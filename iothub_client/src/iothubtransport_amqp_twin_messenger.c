@@ -40,6 +40,7 @@
 #define TWIN_RESOURCE					"/notifications/twin/properties/desired"
 
 #define TWIN_OPERATION_PATCH			"PATCH"
+#define TWIN_OPERATION_GET				"GET"
 #define TWIN_OPERATION_PUT				"PUT"
 #define TWIN_OPERATION_DELETE			"DELETE"
 
@@ -49,8 +50,25 @@
 #define TWIN_API_VERSION_NUMBER							"2016-11-14"
  
 static char* DEFAULT_DEVICES_PATH_FORMAT = "%s/devices/%s";
-static char* DEFAULT_TWIN_SEND_LINK_SOURCE_NAME = "twin";
-static char* DEFAULT_TWIN_RECEIVE_LINK_TARGET_NAME = "twin";
+static char* DEFAULT_TWIN_SEND_LINK_SOURCE_NAME = "twin/";
+static char* DEFAULT_TWIN_RECEIVE_LINK_TARGET_NAME = "twin/";
+
+#define TWIN_OPERATION_TYPE_STRINGS \
+	TWIN_OPERATION_TYPE_PATCH, \
+	TWIN_OPERATION_TYPE_GET, \
+	TWIN_OPERATION_TYPE_PUT, \
+	TWIN_OPERATION_TYPE_DELETE
+
+DEFINE_LOCAL_ENUM(TWIN_OPERATION_TYPE, TWIN_OPERATION_TYPE_STRINGS);
+
+#define TWIN_SUBSCRIPTION_STATE_STRINGS \
+	TWIN_SUBSCRIPTION_STATE_NOT_SUBSCRIBED, \
+	TWIN_SUBSCRIPTION_STATE_GET_COMPLETE_PROPERTIES, \
+	TWIN_SUBSCRIPTION_STATE_SUBSCRIBE_FOR_UPDATES, \
+	TWIN_SUBSCRIPTION_STATE_SUBSCRIBED, \
+	TWIN_SUBSCRIPTION_STATE_UNSUBSCRIBE
+
+DEFINE_LOCAL_ENUM(TWIN_SUBSCRIPTION_STATE, TWIN_SUBSCRIPTION_STATE_STRINGS);
 
 typedef struct TWIN_MESSENGER_INSTANCE_TAG
 {
@@ -63,19 +81,27 @@ typedef struct TWIN_MESSENGER_INSTANCE_TAG
 	TWIN_MESSENGER_STATE_CHANGED_CALLBACK on_state_changed_callback;
 	void* on_state_changed_context;
 
-	bool receive_messages;
+	TWIN_SUBSCRIPTION_STATE subscription_state;
 	TWIN_STATE_UPDATE_CALLBACK on_message_received_callback;
 	void* on_message_received_context;
 
 	AMQP_MESSENGER_HANDLE amqp_msgr;
 } TWIN_MESSENGER_INSTANCE;
 
-
+// TODO: replace TWIN_MESSENGER_UPDATE_CONTEXT with TWIN_OPERATION_CONTEXT.
 typedef struct TWIN_MESSENGER_UPDATE_CONTEXT_TAG
 {
 	TWIN_MESSENGER_REPORT_STATE_COMPLETE_CALLBACK on_report_state_complete_callback;
 	const void* context;
 } TWIN_MESSENGER_UPDATE_CONTEXT;
+
+typedef struct TWIN_OPERATION_CONTEXT_TAG
+{
+	TWIN_OPERATION_TYPE type;
+	TWIN_MESSENGER_INSTANCE* msgr;
+	TWIN_MESSENGER_REPORT_STATE_COMPLETE_CALLBACK on_report_state_complete_callback;
+	const void* on_report_state_complete_context;
+} TWIN_OPERATION_CONTEXT;
 
 
 //---------- AMQP Helper Functions ----------//
@@ -302,6 +328,20 @@ static MESSAGE_HANDLE create_amqp_message_for_update(CONSTBUFFER_HANDLE data)
 
 //---------- internal_ Helpers----------//
 
+static void update_state(TWIN_MESSENGER_INSTANCE* twin_msgr, TWIN_MESSENGER_STATE new_state)
+{
+	if (new_state != twin_msgr->state)
+	{
+		TWIN_MESSENGER_STATE previous_state = twin_msgr->state;
+		twin_msgr->state = new_state;
+
+		if (twin_msgr->on_state_changed_callback != NULL)
+		{
+			twin_msgr->on_state_changed_callback(twin_msgr->on_message_received_context, previous_state, new_state);
+		}
+	}
+}
+
 static void internal_twin_messenger_destroy(TWIN_MESSENGER_INSTANCE* twin_msgr)
 {
 	if (twin_msgr->amqp_msgr != NULL)
@@ -320,6 +360,27 @@ static void internal_twin_messenger_destroy(TWIN_MESSENGER_INSTANCE* twin_msgr)
 	}
 
 	free(twin_msgr);
+}
+
+static TWIN_OPERATION_CONTEXT* create_twin_operation_context(TWIN_OPERATION_TYPE type)
+{
+	TWIN_OPERATION_CONTEXT* result;
+
+	if (result = (TWIN_OPERATION_CONTEXT*)malloc(sizeof(TWIN_OPERATION_CONTEXT)))
+	{
+		LogError("Failed creating TWIN_OPERATION_CONTEXT of type %s", ENUM_TO_STRING(type));
+	}
+	else
+	{
+		result->type = type;
+	}
+
+	return result;
+}
+
+static void destroy_twin_operation_context(TWIN_OPERATION_CONTEXT* result)
+{
+	free(result);
 }
 
 
@@ -411,17 +472,15 @@ static TWIN_MESSENGER_STATE get_twin_state_from(AMQP_MESSENGER_STATE amqp_messen
 
 static void on_amqp_messenger_state_changed_callback(void* context, AMQP_MESSENGER_STATE previous_state, AMQP_MESSENGER_STATE new_state)
 {
-	if (context != NULL && new_state != previous_state)
+	if (context == NULL)
 	{
-		TWIN_MESSENGER_INSTANCE* twin_msgr = (TWIN_MESSENGER_INSTANCE*)context;
-		
-		if (twin_msgr->on_state_changed_callback != NULL)
-		{
-			TWIN_MESSENGER_STATE twin_previous_state = get_twin_state_from(previous_state);
-			TWIN_MESSENGER_STATE twin_new_state = get_twin_state_from(new_state);
+		LogError("Invalid argument (context is NULL)");
+	}
+	else if (new_state != previous_state)
+	{
+		TWIN_MESSENGER_STATE twin_new_state = get_twin_state_from(new_state);
 
-			twin_msgr->on_state_changed_callback(twin_msgr->on_state_changed_context, twin_previous_state, twin_new_state);
-		}
+		update_state((TWIN_MESSENGER_INSTANCE*)context, twin_new_state);
 	}
 }
 
@@ -457,6 +516,7 @@ TWIN_MESSENGER_HANDLE twin_messenger_create(const TWIN_MESSENGER_CONFIG* messeng
 
 			memset(twin_msgr, 0, sizeof(TWIN_MESSENGER_INSTANCE));
 			twin_msgr->state = TWIN_MESSENGER_STATE_STOPPED;
+			twin_msgr->subscription_state = TWIN_SUBSCRIPTION_STATE_NOT_SUBSCRIBED;
 
 			if (mallocAndStrcpy_s(&(char*)twin_msgr->client_version, messenger_config->client_version) != 0)
 			{
@@ -556,16 +616,17 @@ int twin_messenger_report_state_async(TWIN_MESSENGER_HANDLE twin_msgr_handle, CO
 				twin_ctx->on_report_state_complete_callback = on_report_state_complete_callback;
 				twin_ctx->context = context;
 
-				if (amqp_messenger_send_async(twin_msgr->amqp_msgr, amqp_message, on_amqp_send_complete_callback, twin_ctx) != RESULT_OK)
-				{
-					LogError("Failed sending AMQP message with twin update.");
-					free(twin_ctx);
-					result = __FAILURE__;
-				}
-				else
-				{
+				(void)twin_msgr;
+				//if (amqp_messenger_send_async(twin_msgr->amqp_msgr, amqp_message, on_amqp_send_complete_callback, twin_ctx) != RESULT_OK)
+				//{
+				//	LogError("Failed sending AMQP message with twin update.");
+				//	free(twin_ctx);
+				//	result = __FAILURE__;
+				//}
+				//else
+				//{
 					result = RESULT_OK;
-				}
+				//}
 			}
 		
 			message_destroy(amqp_message);
@@ -579,31 +640,36 @@ int twin_messenger_subscribe(TWIN_MESSENGER_HANDLE twin_msgr_handle, TWIN_STATE_
 {
 	int result;
 
-	if (twin_msgr_handle == NULL)
+	if (twin_msgr_handle == NULL || on_twin_state_update_callback == NULL)
 	{
-		LogError("Invalid argument (twin_msgr_handle is NULL)");
+		LogError("Invalid argument (twin_msgr_handle=%p, on_twin_state_update_callback=%p)", twin_msgr_handle, on_twin_state_update_callback);
 		result = __FAILURE__;
 	}
 	else
 	{
 		TWIN_MESSENGER_INSTANCE* twin_msgr = (TWIN_MESSENGER_INSTANCE*)twin_msgr_handle;
 
-		TWIN_STATE_UPDATE_CALLBACK previous_callback = twin_msgr->on_message_received_callback;
-		void* previous_context = twin_msgr->on_message_received_context;
-
-		twin_msgr->on_message_received_callback = on_twin_state_update_callback;
-		twin_msgr->on_message_received_context = context;
-
-		if (amqp_messenger_subscribe_for_messages(twin_msgr->amqp_msgr, on_amqp_message_received, (void*)twin_msgr) != 0)
+		if (twin_msgr->subscription_state != TWIN_SUBSCRIPTION_STATE_NOT_SUBSCRIBED)
 		{
-			LogError("Failed subscribing for TWIN updates");
-			twin_msgr->on_message_received_callback = previous_callback;
-			twin_msgr->on_message_received_context = previous_context;
-			result = __FAILURE__;
+			result = RESULT_OK;
 		}
 		else
 		{
-			result = RESULT_OK;
+			twin_msgr->on_message_received_callback = on_twin_state_update_callback;
+			twin_msgr->on_message_received_context = context;
+
+			if (amqp_messenger_subscribe_for_messages(twin_msgr->amqp_msgr, on_amqp_message_received, (void*)twin_msgr) != 0)
+			{
+				LogError("Failed subscribing for TWIN updates");
+				twin_msgr->on_message_received_callback = NULL;
+				twin_msgr->on_message_received_context = NULL;
+				result = __FAILURE__;
+			}
+			else
+			{
+				twin_msgr->subscription_state = TWIN_SUBSCRIPTION_STATE_GET_COMPLETE_PROPERTIES;
+				result = RESULT_OK;
+			}
 		}
 	}
 
@@ -630,6 +696,7 @@ int twin_messenger_unsubscribe(TWIN_MESSENGER_HANDLE twin_msgr_handle)
 		}
 		else
 		{
+			twin_msgr->subscription_state = TWIN_SUBSCRIPTION_STATE_UNSUBSCRIBE;
 			twin_msgr->on_message_received_callback = NULL;
 			twin_msgr->on_message_received_context = NULL;
 			result = RESULT_OK;
@@ -722,11 +789,103 @@ int twin_messenger_stop(TWIN_MESSENGER_HANDLE twin_msgr_handle)
 	return result;
 }
 
+static int send_twin_operation_request(TWIN_MESSENGER_INSTANCE* twin_msgr, TWIN_OPERATION_CONTEXT* op_ctx, CONSTBUFFER_HANDLE data)
+{
+	int result;
+	MESSAGE_HANDLE amqp_message;
+	// TODO: continue from here
+	switch (op_ctx->type)
+	{
+		case TWIN_OPERATION_TYPE_PATCH:
+			amqp_message = create_amqp_message_for_update(data);
+			break;
+		case TWIN_OPERATION_TYPE_GET:
+			amqp_message = create_amqp_message_for_get();
+			break;
+		case TWIN_OPERATION_TYPE_PUT:
+			amqp_message = create_amqp_message_for_put();
+			break;
+		case TWIN_OPERATION_TYPE_DELETE:
+			amqp_message = create_amqp_message_for_delete();
+			break;
+		default:
+			LogError("Unknown operation type '%s'", ENUM_TO_STRING(TWIN_OPERATION_TYPE, op_ctx->type));
+			amqp_message = NULL;
+			break;
+	}
+
+	if (amqp_message == NULL)
+	{
+		LogError("Failed creating request message for TWIN operation %s", ENUM_TO_STRING(TWIN_OPERATION_TYPE, op_ctx->type));
+		result = __FAILURE__;
+	}
+	else
+	{
+		if (amqp_messenger_send_async(twin_msgr->amqp_msgr, amqp_message, on_amqp_send_complete_callback, (void*)twin_msgr) != 0)
+		{
+			LogError("Failed requesting complete TWIN desired properties");
+			result = __FAILURE__;
+		}
+		else
+		{
+			result = RESULT_OK;
+		}
+
+		amqpvalue_destroy(amqp_message);
+	}
+
+	return result;
+}
+
+static void process_twin_subscription(TWIN_MESSENGER_INSTANCE* twin_msgr)
+{
+	if (twin_msgr->subscription_state != TWIN_SUBSCRIPTION_STATE_SUBSCRIBED)
+	{
+		if (twin_msgr->subscription_state == TWIN_SUBSCRIPTION_STATE_GET_COMPLETE_PROPERTIES)
+		{
+			TWIN_OPERATION_CONTEXT* twin_op_ctx;
+			
+			if ((twin_op_ctx = create_twin_operation_context(TWIN_OPERATION_TYPE_GET)) == NULL)
+			{
+				LogError("Failed creating a context for requesting complete TWIN desired properties");
+			}
+			else
+			{
+			
+			}
+		}
+		else if (twin_msgr->subscription_state == TWIN_SUBSCRIPTION_STATE_GET_COMPLETE_PROPERTIES)
+		{
+			MESSAGE_HANDLE amqp_message;
+
+			if ((amqp_message = create_request_for_desired_properties_updates()) == NULL)
+			{
+				LogError("Failed creating request for TWIN desired properties updates");
+
+				update_state(twin_msgr, TWIN_MESSENGER_STATE_ERROR);
+			}
+			else
+			{
+				if (amqp_messenger_send_async(twin_msgr->amqp_msgr, amqp_message, on_amqp_send_complete_callback, (void*)twin_msgr) != 0)
+				{
+					LogError("Failed requesting TWIN desired properties updates");
+
+					update_state(twin_msgr, TWIN_MESSENGER_STATE_ERROR);
+				}
+
+				amqpvalue_destroy(amqp_message);
+			}
+		}
+	}
+}
+
 void twin_messenger_do_work(TWIN_MESSENGER_HANDLE twin_msgr_handle)
 {
 	if (twin_msgr_handle != NULL)
 	{
 		TWIN_MESSENGER_INSTANCE* twin_msgr = (TWIN_MESSENGER_INSTANCE*)twin_msgr_handle;
+
+		process_twin_subscription(twin_msgr);
 
 		amqp_messenger_do_work(twin_msgr->amqp_msgr);
 	}

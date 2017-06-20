@@ -456,7 +456,7 @@ static LINK_HANDLE create_link(role link_role, SESSION_HANDLE session_handle, AM
 	LINK_HANDLE result = NULL;
 	STRING_HANDLE link_address;
 
-	if ((link_address = create_link_address(iothub_host_fqdn, device_id, link_config->target_suffix)) == NULL)
+	if ((link_address = create_link_address(iothub_host_fqdn, device_id, (link_role == role_sender ? link_config->target_suffix : link_config->source_suffix))) == NULL)
 	{
 		LogError("Failed creating the message sender (failed creating the 'link_address')");
 		result = NULL;
