@@ -278,34 +278,41 @@ static MAP_HANDLE create_link_attach_properties(TWIN_MESSENGER_INSTANCE* twin_ms
 	return result;
 }
 
-
-static MESSAGE_HANDLE create_amqp_message_for_update(CONSTBUFFER_HANDLE data)
+static MESSAGE_HANDLE create_amqp_message_for_twin_operation(const char* twin_op)
 {
 	MESSAGE_HANDLE result;
 
 	if ((result = message_create()) == NULL)
 	{
-		LogError("Failed creating AMQP message");
+		LogError("Failed creating AMQP message (%s)", twin_op);
 	}
 	else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_RESOURCE, TWIN_RESOURCE) != 0)
 	{
-		LogError("Failed adding resource to AMQP message annotations");
+		LogError("Failed adding resource to AMQP message annotations (%s)", twin_op);
 		message_destroy(result);
 		result = NULL;
 	}
-	else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_OPERATION, TWIN_OPERATION_PATCH) != 0)
+	else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_OPERATION, twin_op) != 0)
 	{
-		LogError("Failed adding operation to AMQP message annotations");
+		LogError("Failed adding operation to AMQP message annotations (%s)", twin_op);
 		message_destroy(result);
 		result = NULL;
 	}
 	else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_VERSION, NULL) != 0)
 	{
-		LogError("Failed adding version to AMQP message annotations");
+		LogError("Failed adding version to AMQP message annotations (%s)", twin_op);
 		message_destroy(result);
 		result = NULL;
 	}
-	else
+
+	return result;
+}
+
+static MESSAGE_HANDLE create_amqp_message_for_patch(CONSTBUFFER_HANDLE data)
+{
+	MESSAGE_HANDLE result;
+
+	if ((result = create_amqp_message_for_twin_operation(TWIN_OPERATION_PATCH)) != NULL)
 	{
 		const CONSTBUFFER* data_buffer;
 		BINARY_DATA binary_data;
@@ -317,7 +324,7 @@ static MESSAGE_HANDLE create_amqp_message_for_update(CONSTBUFFER_HANDLE data)
 
 		if (message_add_body_amqp_data(result, binary_data) != 0)
 		{
-			LogError("Failed adding twin update to AMQP message body");
+			LogError("Failed adding twin patch data to AMQP message body");
 			message_destroy(result);
 			result = NULL;
 		}
@@ -325,6 +332,22 @@ static MESSAGE_HANDLE create_amqp_message_for_update(CONSTBUFFER_HANDLE data)
 
 	return result;
 }
+
+static MESSAGE_HANDLE create_amqp_message_for_get()
+{
+	return create_amqp_message_for_twin_operation(TWIN_OPERATION_GET);
+}
+
+static MESSAGE_HANDLE create_amqp_message_for_put()
+{
+	return create_amqp_message_for_twin_operation(TWIN_OPERATION_PUT);
+}
+
+static MESSAGE_HANDLE create_amqp_message_for_delete()
+{
+	return create_amqp_message_for_twin_operation(TWIN_OPERATION_DELETE);
+}
+
 
 //---------- internal_ Helpers----------//
 
@@ -366,12 +389,13 @@ static TWIN_OPERATION_CONTEXT* create_twin_operation_context(TWIN_OPERATION_TYPE
 {
 	TWIN_OPERATION_CONTEXT* result;
 
-	if (result = (TWIN_OPERATION_CONTEXT*)malloc(sizeof(TWIN_OPERATION_CONTEXT)))
+	if ((result = (TWIN_OPERATION_CONTEXT*)malloc(sizeof(TWIN_OPERATION_CONTEXT))) == NULL)
 	{
-		LogError("Failed creating TWIN_OPERATION_CONTEXT of type %s", ENUM_TO_STRING(type));
+		LogError("Failed creating TWIN_OPERATION_CONTEXT of type %s", ENUM_TO_STRING(TWIN_OPERATION_TYPE, type));
 	}
 	else
 	{
+		memset(result, 0, sizeof(TWIN_OPERATION_CONTEXT));
 		result->type = type;
 	}
 
@@ -424,14 +448,19 @@ static void on_amqp_send_complete_callback(AMQP_MESSENGER_SEND_RESULT result, vo
 	}
 	else if (result != AMQP_MESSENGER_SEND_RESULT_OK)
 	{
-		TWIN_MESSENGER_UPDATE_CONTEXT* twin_ctx = (TWIN_MESSENGER_UPDATE_CONTEXT*)context;
+		TWIN_OPERATION_CONTEXT* twin_op_ctx = (TWIN_OPERATION_CONTEXT*)context;
 
-		if (twin_ctx->on_report_state_complete_callback != NULL)
-		{
-			twin_ctx->on_report_state_complete_callback(TWIN_REPORT_STATE_RESULT_ERROR, 0, (void*)twin_ctx->context);
-		}
+		(void)twin_op_ctx;
 
-		free(twin_ctx);
+		//if (twin_op_ctx->type == TWIN_OPERATION_TYPE_PATCH)
+		//{
+		//	if (twin_op_ctx->on_report_state_complete_callback != NULL)
+		//	{
+		//		twin_op_ctx->on_report_state_complete_callback(TWIN_REPORT_STATE_RESULT_ERROR, 0, (void*)twin_op_ctx->on_report_state_complete_context);
+		//	}
+
+		//	free(twin_op_ctx);
+		//}
 	}
 }
 
@@ -595,7 +624,7 @@ int twin_messenger_report_state_async(TWIN_MESSENGER_HANDLE twin_msgr_handle, CO
 	{
 		MESSAGE_HANDLE amqp_message;
 		
-		if ((amqp_message = create_amqp_message_for_update(data)) == NULL)
+		if ((amqp_message = create_amqp_message_for_patch(data)) == NULL)
 		{
 			LogError("Failed creating AMQP message for reporting twin update.");
 			result = __FAILURE__;
@@ -793,11 +822,11 @@ static int send_twin_operation_request(TWIN_MESSENGER_INSTANCE* twin_msgr, TWIN_
 {
 	int result;
 	MESSAGE_HANDLE amqp_message;
-	// TODO: continue from here
+
 	switch (op_ctx->type)
 	{
 		case TWIN_OPERATION_TYPE_PATCH:
-			amqp_message = create_amqp_message_for_update(data);
+			amqp_message = create_amqp_message_for_patch(data);
 			break;
 		case TWIN_OPERATION_TYPE_GET:
 			amqp_message = create_amqp_message_for_get();
@@ -816,14 +845,14 @@ static int send_twin_operation_request(TWIN_MESSENGER_INSTANCE* twin_msgr, TWIN_
 
 	if (amqp_message == NULL)
 	{
-		LogError("Failed creating request message for TWIN operation %s", ENUM_TO_STRING(TWIN_OPERATION_TYPE, op_ctx->type));
+		LogError("Failed creating request message for %s", ENUM_TO_STRING(TWIN_OPERATION_TYPE, op_ctx->type));
 		result = __FAILURE__;
 	}
 	else
 	{
-		if (amqp_messenger_send_async(twin_msgr->amqp_msgr, amqp_message, on_amqp_send_complete_callback, (void*)twin_msgr) != 0)
+		if (amqp_messenger_send_async(twin_msgr->amqp_msgr, amqp_message, on_amqp_send_complete_callback, (void*)op_ctx) != 0)
 		{
-			LogError("Failed requesting complete TWIN desired properties");
+			LogError("Failed sending request message for %s", ENUM_TO_STRING(TWIN_OPERATION_TYPE, op_ctx->type));
 			result = __FAILURE__;
 		}
 		else
@@ -831,7 +860,7 @@ static int send_twin_operation_request(TWIN_MESSENGER_INSTANCE* twin_msgr, TWIN_
 			result = RESULT_OK;
 		}
 
-		amqpvalue_destroy(amqp_message);
+		message_destroy(amqp_message);
 	}
 
 	return result;
@@ -839,41 +868,72 @@ static int send_twin_operation_request(TWIN_MESSENGER_INSTANCE* twin_msgr, TWIN_
 
 static void process_twin_subscription(TWIN_MESSENGER_INSTANCE* twin_msgr)
 {
-	if (twin_msgr->subscription_state != TWIN_SUBSCRIPTION_STATE_SUBSCRIBED)
+	if (twin_msgr->subscription_state == TWIN_SUBSCRIPTION_STATE_GET_COMPLETE_PROPERTIES)
 	{
-		if (twin_msgr->subscription_state == TWIN_SUBSCRIPTION_STATE_GET_COMPLETE_PROPERTIES)
-		{
-			TWIN_OPERATION_CONTEXT* twin_op_ctx;
+		TWIN_OPERATION_CONTEXT* twin_op_ctx;
 			
-			if ((twin_op_ctx = create_twin_operation_context(TWIN_OPERATION_TYPE_GET)) == NULL)
+		if ((twin_op_ctx = create_twin_operation_context(TWIN_OPERATION_TYPE_GET)) == NULL)
+		{
+			LogError("Failed creating a context for requesting complete TWIN desired properties");
+		}
+		else
+		{
+			// Add context to some list to control the traffic.
+
+			if (send_twin_operation_request(twin_msgr, twin_op_ctx, NULL) != RESULT_OK)
 			{
-				LogError("Failed creating a context for requesting complete TWIN desired properties");
+				LogError("Failed sending request for complete TWIN desired properties");
+				destroy_twin_operation_context(twin_op_ctx);
 			}
 			else
 			{
-			
+				twin_msgr->subscription_state = TWIN_SUBSCRIPTION_STATE_SUBSCRIBE_FOR_UPDATES;
 			}
 		}
-		else if (twin_msgr->subscription_state == TWIN_SUBSCRIPTION_STATE_GET_COMPLETE_PROPERTIES)
+	}
+	else if (twin_msgr->subscription_state == TWIN_SUBSCRIPTION_STATE_SUBSCRIBE_FOR_UPDATES)
+	{
+		TWIN_OPERATION_CONTEXT* twin_op_ctx;
+
+		if ((twin_op_ctx = create_twin_operation_context(TWIN_OPERATION_TYPE_PUT)) == NULL)
 		{
-			MESSAGE_HANDLE amqp_message;
+			LogError("Failed creating a context for requesting TWIN desired properties updates");
+		}
+		else
+		{
+			// Add context to some list to control the traffic.
 
-			if ((amqp_message = create_request_for_desired_properties_updates()) == NULL)
+			if (send_twin_operation_request(twin_msgr, twin_op_ctx, NULL) != RESULT_OK)
 			{
-				LogError("Failed creating request for TWIN desired properties updates");
-
-				update_state(twin_msgr, TWIN_MESSENGER_STATE_ERROR);
+				LogError("Failed sending request for TWIN desired properties updates");
+				destroy_twin_operation_context(twin_op_ctx);
 			}
 			else
 			{
-				if (amqp_messenger_send_async(twin_msgr->amqp_msgr, amqp_message, on_amqp_send_complete_callback, (void*)twin_msgr) != 0)
-				{
-					LogError("Failed requesting TWIN desired properties updates");
+				twin_msgr->subscription_state = TWIN_SUBSCRIPTION_STATE_SUBSCRIBED;
+			}
+		}
+	}
+	else if (twin_msgr->subscription_state == TWIN_SUBSCRIPTION_STATE_UNSUBSCRIBE)
+	{
+		TWIN_OPERATION_CONTEXT* twin_op_ctx;
 
-					update_state(twin_msgr, TWIN_MESSENGER_STATE_ERROR);
-				}
+		if ((twin_op_ctx = create_twin_operation_context(TWIN_OPERATION_TYPE_DELETE)) == NULL)
+		{
+			LogError("Failed creating a context for stopping TWIN desired properties updates");
+		}
+		else
+		{
+			// Add context to some list to control the traffic.
 
-				amqpvalue_destroy(amqp_message);
+			if (send_twin_operation_request(twin_msgr, twin_op_ctx, NULL) != RESULT_OK)
+			{
+				LogError("Failed sending request for stopping TWIN desired properties updates");
+				destroy_twin_operation_context(twin_op_ctx);
+			}
+			else
+			{
+				twin_msgr->subscription_state = TWIN_SUBSCRIPTION_STATE_NOT_SUBSCRIBED;
 			}
 		}
 	}
