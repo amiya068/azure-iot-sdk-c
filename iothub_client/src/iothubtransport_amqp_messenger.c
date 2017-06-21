@@ -599,20 +599,26 @@ static int create_message_sender(AMQP_MESSENGER_INSTANCE* instance)
 		instance->sender_link = NULL;
 		result = __FAILURE__;
 	}
-	// Codes_SRS_IOTHUBTRANSPORT_AMQP_MESSENGER_09_053: [`instance->message_sender` shall be opened using messagesender_open()]
-	else if (messagesender_open(instance->message_sender) != RESULT_OK)
-	{
-		// Codes_SRS_IOTHUBTRANSPORT_AMQP_MESSENGER_09_054: [If messagesender_open() fails, amqp_messenger_do_work() shall fail and return]
-		LogError("Failed opening the AMQP message sender.");
-		messagesender_destroy(instance->message_sender);
-		instance->message_sender = NULL;
-		link_destroy(instance->sender_link);
-		instance->sender_link = NULL;
-		result = __FAILURE__;
-	}
 	else
 	{
-		result = RESULT_OK;
+		// TODO: remove this
+		messagesender_set_trace(instance->message_sender, true);
+
+		// Codes_SRS_IOTHUBTRANSPORT_AMQP_MESSENGER_09_053: [`instance->message_sender` shall be opened using messagesender_open()]
+		if (messagesender_open(instance->message_sender) != RESULT_OK)
+		{
+			// Codes_SRS_IOTHUBTRANSPORT_AMQP_MESSENGER_09_054: [If messagesender_open() fails, amqp_messenger_do_work() shall fail and return]
+			LogError("Failed opening the AMQP message sender.");
+			messagesender_destroy(instance->message_sender);
+			instance->message_sender = NULL;
+			link_destroy(instance->sender_link);
+			instance->sender_link = NULL;
+			result = __FAILURE__;
+		}
+		else
+		{
+			result = RESULT_OK;
+		}
 	}
 
 	return result;

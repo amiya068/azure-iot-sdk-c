@@ -33,6 +33,9 @@
 #define UNIQUE_ID_BUFFER_SIZE                           37
 #define STRING_NULL_TERMINATOR                          '\0'
 
+#define EMPTY_TWIN_BODY_DATA                            ((const unsigned char*)" ")
+#define EMPTY_TWIN_BODY_SIZE                            1
+
 #define TWIN_MESSAGE_PROPERTY_OPERATION	"operation"
 #define TWIN_MESSAGE_PROPERTY_RESOURCE  "resource"
 #define TWIN_MESSAGE_PROPERTY_VERSION   "version"
@@ -105,18 +108,123 @@ typedef struct TWIN_OPERATION_CONTEXT_TAG
 
 
 //---------- AMQP Helper Functions ----------//
+//
+//static int set_message_correlation_id(MESSAGE_HANDLE message, const char* value)
+//{
+//	int result;
+//	PROPERTIES_HANDLE properties;
+//
+//	if (message_get_properties(message, &properties) != 0)
+//	{
+//		LogError("Failed getting the AMQP message properties.");
+//		result = __FAILURE__;
+//	}
+//	else if (properties == NULL && (properties = properties_create()) == NULL)
+//	{
+//		LogError("Failed creating properties for AMQP message");
+//		result = __FAILURE__;
+//	}
+//	else
+//	{
+//		
+//
+//		properties_destroy(properties);
+//	}
+//
+//	return result;
+//}
+
+static int add_map_item(AMQP_VALUE map, const char* name, const char* value)
+{
+	int result;
+	AMQP_VALUE amqp_value_name;
+
+	if ((amqp_value_name = amqpvalue_create_string(name)) == NULL)
+	{
+		LogError("Failed creating AMQP_VALUE for name");
+		result = __FAILURE__;
+	}
+	else
+	{
+		AMQP_VALUE amqp_value_value = NULL;
+
+		if (value == NULL && (amqp_value_value = amqpvalue_create_null()) == NULL)
+		{
+			LogError("Failed creating AMQP_VALUE for NULL value");
+			result = __FAILURE__;
+		}
+		else if (value != NULL && (amqp_value_value = amqpvalue_create_string(value)) == NULL)
+		{
+			LogError("Failed creating AMQP_VALUE for value");
+			result = __FAILURE__;
+		}
+		else
+		{
+			if (amqpvalue_set_map_value(map, amqp_value_name, amqp_value_value) != 0)
+			{
+				LogError("Failed adding key/value pair to map");
+				result = __FAILURE__;
+			}
+			else
+			{
+				result = RESULT_OK;
+			}
+
+			amqpvalue_destroy(amqp_value_value);
+		}
+
+		amqpvalue_destroy(amqp_value_name);
+	}
+
+	return result;
+}
+
+static int add_amqp_message_annotation2(MESSAGE_HANDLE message, AMQP_VALUE msg_annotations_map)
+{
+	int result;
+	AMQP_VALUE msg_annotations;
+
+	if ((msg_annotations = amqpvalue_create_message_annotations(msg_annotations_map)) == NULL)
+	{
+		LogError("Failed creating new AMQP message annotations");
+		result = __FAILURE__;
+	}
+	else
+	{
+		if (message_set_message_annotations(message, (annotations)msg_annotations) != 0)
+		{
+			LogError("Failed setting AMQP message annotations");
+			result = __FAILURE__;
+		}
+		else
+		{
+			result = RESULT_OK;
+		}
+
+		amqpvalue_destroy(msg_annotations);
+	}
+
+	return result;
+}
+
 
 static int add_amqp_message_annotation(MESSAGE_HANDLE message, const char* name, const char* value)
 {
 	int result;
 	AMQP_VALUE msg_annotations;
+	AMQP_VALUE msg_annotations_map = NULL;
 
 	if (message_get_message_annotations(message, &(annotations)msg_annotations) != 0)
 	{
 		LogError("Failed getting the AMQP message annotations.");
 		result = __FAILURE__;
 	}
-	else if (msg_annotations == NULL && (msg_annotations = amqpvalue_create_map()) == NULL)
+	else if (msg_annotations != NULL && amqpvalue_get_message_annotations(msg_annotations, &msg_annotations_map) != 0)
+	{
+		LogError("Failed getting map from AMQP message annotations");
+		result = __FAILURE__;
+	}
+	else if (msg_annotations == NULL && (msg_annotations_map = amqpvalue_create_map()) == NULL)
 	{
 		LogError("Failed creating annotations map for AMQP message");
 		result = __FAILURE__;
@@ -146,19 +254,29 @@ static int add_amqp_message_annotation(MESSAGE_HANDLE message, const char* name,
 			}
 			else
 			{
-				if (amqpvalue_set_map_value(msg_annotations, amqp_value_name, amqp_value_value) != 0)
+				if (amqpvalue_set_map_value(msg_annotations_map, amqp_value_name, amqp_value_value) != 0)
 				{
 					LogError("Failed adding key/value pair to AMQP message annotations");
 					result = __FAILURE__;
 				}
-				else if (message_set_message_annotations(message, (annotations)msg_annotations) != 0)
+				else if ((msg_annotations = amqpvalue_create_message_annotations(msg_annotations_map)) == NULL)
 				{
-					LogError("Failed setting AMQP message annotations");
+					LogError("Failed creating new AMQP message annotations");
 					result = __FAILURE__;
 				}
 				else
 				{
-					result = RESULT_OK;
+					if (message_set_message_annotations(message, (annotations)msg_annotations) != 0)
+					{
+						LogError("Failed setting AMQP message annotations");
+						result = __FAILURE__;
+					}
+					else
+					{
+						result = RESULT_OK;
+					}
+
+					amqpvalue_destroy(msg_annotations);
 				}
 
 				amqpvalue_destroy(amqp_value_value);
@@ -167,7 +285,7 @@ static int add_amqp_message_annotation(MESSAGE_HANDLE message, const char* name,
 			amqpvalue_destroy(amqp_value_name);
 		}
 
-		amqpvalue_destroy(msg_annotations);
+		amqpvalue_destroy(msg_annotations_map);
 	}
 
 	return result;
@@ -278,7 +396,8 @@ static MAP_HANDLE create_link_attach_properties(TWIN_MESSENGER_INSTANCE* twin_ms
 	return result;
 }
 
-static MESSAGE_HANDLE create_amqp_message_for_twin_operation(const char* twin_op)
+
+static MESSAGE_HANDLE create_amqp_message_for_twin_operation(const char* twin_op, CONSTBUFFER_HANDLE data)
 {
 	MESSAGE_HANDLE result;
 
@@ -286,23 +405,81 @@ static MESSAGE_HANDLE create_amqp_message_for_twin_operation(const char* twin_op
 	{
 		LogError("Failed creating AMQP message (%s)", twin_op);
 	}
-	else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_RESOURCE, TWIN_RESOURCE) != 0)
+	else
 	{
-		LogError("Failed adding resource to AMQP message annotations (%s)", twin_op);
-		message_destroy(result);
-		result = NULL;
-	}
-	else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_OPERATION, twin_op) != 0)
-	{
-		LogError("Failed adding operation to AMQP message annotations (%s)", twin_op);
-		message_destroy(result);
-		result = NULL;
-	}
-	else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_VERSION, NULL) != 0)
-	{
-		LogError("Failed adding version to AMQP message annotations (%s)", twin_op);
-		message_destroy(result);
-		result = NULL;
+		AMQP_VALUE msg_annotations_map;
+
+		if ((msg_annotations_map = amqpvalue_create_map()) == NULL)
+		{
+			LogError("Failed creating map for message annotations");
+			message_destroy(result);
+			result = NULL;
+		}
+		else
+		{
+			if (add_map_item(msg_annotations_map, TWIN_MESSAGE_PROPERTY_OPERATION, twin_op) != RESULT_OK)
+			{
+				LogError("Failed adding operation to AMQP message annotations (%s)", twin_op);
+				message_destroy(result);
+				result = NULL;
+			}
+			else if (add_map_item(msg_annotations_map, TWIN_MESSAGE_PROPERTY_RESOURCE, TWIN_RESOURCE) != RESULT_OK)
+			{
+				LogError("Failed adding resource to AMQP message annotations (%s)", twin_op);
+				message_destroy(result);
+				result = NULL;
+			}
+			else if (add_amqp_message_annotation2(result, msg_annotations_map) != RESULT_OK)
+			{
+				LogError("Failed adding annotations to AMQP message (%s)", twin_op);
+				message_destroy(result);
+				result = NULL;
+			}
+			//else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_OPERATION, twin_op) != 0)
+			//{
+			//	LogError("Failed adding operation to AMQP message annotations (%s)", twin_op);
+			//	message_destroy(result);
+			//	result = NULL;
+			//}
+			//else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_RESOURCE, TWIN_RESOURCE) != 0)
+			//{
+			//	LogError("Failed adding resource to AMQP message annotations (%s)", twin_op);
+			//	message_destroy(result);
+			//	result = NULL;
+			//}
+			//else if (add_amqp_message_annotation(result, TWIN_MESSAGE_PROPERTY_VERSION, NULL) != 0)
+			//{
+			//	LogError("Failed adding version to AMQP message annotations (%s)", twin_op);
+			//	message_destroy(result);
+			//	result = NULL;
+			//}
+			else
+			{
+				BINARY_DATA binary_data;
+
+				if (data != NULL)
+				{
+					const CONSTBUFFER* data_buffer;
+					data_buffer = CONSTBUFFER_GetContent(data);
+					binary_data.bytes = data_buffer->buffer;
+					binary_data.length = data_buffer->size;
+				}
+				else
+				{
+					binary_data.bytes = EMPTY_TWIN_BODY_DATA;
+					binary_data.length = EMPTY_TWIN_BODY_SIZE;
+				}
+
+				if (message_add_body_amqp_data(result, binary_data) != 0)
+				{
+					LogError("Failed adding twin patch data to AMQP message body");
+					message_destroy(result);
+					result = NULL;
+				}
+			}
+
+			amqpvalue_destroy(msg_annotations_map);
+		}
 	}
 
 	return result;
@@ -310,42 +487,22 @@ static MESSAGE_HANDLE create_amqp_message_for_twin_operation(const char* twin_op
 
 static MESSAGE_HANDLE create_amqp_message_for_patch(CONSTBUFFER_HANDLE data)
 {
-	MESSAGE_HANDLE result;
-
-	if ((result = create_amqp_message_for_twin_operation(TWIN_OPERATION_PATCH)) != NULL)
-	{
-		const CONSTBUFFER* data_buffer;
-		BINARY_DATA binary_data;
-
-		data_buffer = CONSTBUFFER_GetContent(data);
-
-		binary_data.bytes = data_buffer->buffer;
-		binary_data.length = data_buffer->size;
-
-		if (message_add_body_amqp_data(result, binary_data) != 0)
-		{
-			LogError("Failed adding twin patch data to AMQP message body");
-			message_destroy(result);
-			result = NULL;
-		}
-	}
-
-	return result;
+	return create_amqp_message_for_twin_operation(TWIN_OPERATION_PATCH, data);
 }
 
 static MESSAGE_HANDLE create_amqp_message_for_get()
 {
-	return create_amqp_message_for_twin_operation(TWIN_OPERATION_GET);
+	return create_amqp_message_for_twin_operation(TWIN_OPERATION_GET, NULL);
 }
 
 static MESSAGE_HANDLE create_amqp_message_for_put()
 {
-	return create_amqp_message_for_twin_operation(TWIN_OPERATION_PUT);
+	return create_amqp_message_for_twin_operation(TWIN_OPERATION_PUT, NULL);
 }
 
 static MESSAGE_HANDLE create_amqp_message_for_delete()
 {
-	return create_amqp_message_for_twin_operation(TWIN_OPERATION_DELETE);
+	return create_amqp_message_for_twin_operation(TWIN_OPERATION_DELETE, NULL);
 }
 
 
@@ -850,6 +1007,7 @@ static int send_twin_operation_request(TWIN_MESSENGER_INSTANCE* twin_msgr, TWIN_
 	}
 	else
 	{
+		//(void)twin_msgr;
 		if (amqp_messenger_send_async(twin_msgr->amqp_msgr, amqp_message, on_amqp_send_complete_callback, (void*)op_ctx) != 0)
 		{
 			LogError("Failed sending request message for %s", ENUM_TO_STRING(TWIN_OPERATION_TYPE, op_ctx->type));
