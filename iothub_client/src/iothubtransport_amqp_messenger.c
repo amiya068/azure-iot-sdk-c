@@ -17,6 +17,13 @@
 #include "iothub_client_retry_control.h"
 #include "iothubtransport_amqp_messenger.h"
 
+DEFINE_ENUM_STRINGS(AMQP_MESSENGER_SEND_STATUS, AMQP_MESSENGER_SEND_STATUS_VALUES);
+DEFINE_ENUM_STRINGS(AMQP_MESSENGER_SEND_RESULT, AMQP_MESSENGER_SEND_RESULT_VALUES);
+DEFINE_ENUM_STRINGS(AMQP_MESSENGER_REASON, AMQP_MESSENGER_REASON_VALUES);
+DEFINE_ENUM_STRINGS(AMQP_MESSENGER_DISPOSITION_RESULT, AMQP_MESSENGER_DISPOSITION_RESULT_VALUES);
+DEFINE_ENUM_STRINGS(AMQP_MESSENGER_STATE, AMQP_MESSENGER_STATE_VALUES);
+
+
 #define RESULT_OK 0
 #define INDEFINITE_TIME ((time_t)(-1))
 
@@ -601,9 +608,6 @@ static int create_message_sender(AMQP_MESSENGER_INSTANCE* instance)
 	}
 	else
 	{
-		// TODO: remove this
-		messagesender_set_trace(instance->message_sender, true);
-
 		// Codes_SRS_IOTHUBTRANSPORT_AMQP_MESSENGER_09_053: [`instance->message_sender` shall be opened using messagesender_open()]
 		if (messagesender_open(instance->message_sender) != RESULT_OK)
 		{
@@ -1034,31 +1038,36 @@ static void on_message_processing_completed_callback(MQ_MESSAGE_HANDLE message, 
 	{
 		MESSAGE_SEND_CONTEXT* msg_ctx = (MESSAGE_SEND_CONTEXT*)message_context;
 		AMQP_MESSENGER_SEND_RESULT messenger_send_result;
+		AMQP_MESSENGER_REASON messenger_send_reason;
 
 		// Codes_SRS_IOTHUBTRANSPORT_AMQP_MESSENGER_09_107: [If no failure occurs, `task->on_send_complete_callback` shall be invoked with result EVENT_SEND_COMPLETE_RESULT_OK]  
 		// Codes_SRS_IOTHUBTRANSPORT_AMQP_MESSENGER_09_108: [If a failure occurred, `task->on_send_complete_callback` shall be invoked with result EVENT_SEND_COMPLETE_RESULT_ERROR_FAIL_SENDING] 
 		if (result == MESSAGE_QUEUE_SUCCESS)
 		{
-			messenger_send_result = AMQP_MESSENGER_SEND_RESULT_OK;
+			messenger_send_result = AMQP_MESSENGER_SEND_RESULT_SUCCESS;
+			messenger_send_reason = AMQP_MESSENGER_REASON_NONE;
 		}
 		else if (result == MESSAGE_QUEUE_TIMEOUT)
 		{
-			messenger_send_result = AMQP_MESSENGER_SEND_RESULT_ERROR_TIMEOUT;
+			messenger_send_result = AMQP_MESSENGER_SEND_RESULT_ERROR;
+			messenger_send_reason = AMQP_MESSENGER_REASON_TIMEOUT;
 		}
 		else if (result == MESSAGE_QUEUE_CANCELLED && msg_ctx->messenger->state == AMQP_MESSENGER_STATE_STOPPED)
 		{
-			messenger_send_result = AMQP_MESSENGER_SEND_RESULT_MESSENGER_DESTROYED;
+			messenger_send_result = AMQP_MESSENGER_SEND_RESULT_CANCELLED;
+			messenger_send_reason = AMQP_MESSENGER_REASON_MESSENGER_DESTROYED;
 		}
 		else
 		{
 			msg_ctx->messenger->send_error_count++;
 
-			messenger_send_result = AMQP_MESSENGER_SEND_RESULT_ERROR_FAIL_SENDING;
+			messenger_send_result = AMQP_MESSENGER_SEND_RESULT_ERROR;
+			messenger_send_reason = AMQP_MESSENGER_REASON_FAIL_SENDING;
 		}
 
 		if (msg_ctx->on_send_complete_callback != NULL)
 		{
-			msg_ctx->on_send_complete_callback(messenger_send_result, msg_ctx->user_context);
+			msg_ctx->on_send_complete_callback(messenger_send_result, messenger_send_reason, msg_ctx->user_context);
 		}
 
 		if (!msg_ctx->is_destroyed)

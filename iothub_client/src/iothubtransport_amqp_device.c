@@ -12,6 +12,14 @@
 #include "iothubtransport_amqp_telemetry_messenger.h"
 #include "iothubtransport_amqp_twin_messenger.h"
 
+DEFINE_ENUM_STRINGS(DEVICE_STATE, DEVICE_STATE_VALUES);
+DEFINE_ENUM_STRINGS(DEVICE_AUTH_MODE, DEVICE_AUTH_MODE_VALUES);
+DEFINE_ENUM_STRINGS(DEVICE_SEND_STATUS, DEVICE_SEND_STATUS_VALUES);
+DEFINE_ENUM_STRINGS(D2C_EVENT_SEND_RESULT, D2C_EVENT_SEND_RESULT_VALUES);
+DEFINE_ENUM_STRINGS(DEVICE_MESSAGE_DISPOSITION_RESULT, DEVICE_MESSAGE_DISPOSITION_RESULT_VALUES);
+DEFINE_ENUM_STRINGS(DEVICE_TWIN_UPDATE_RESULT, DEVICE_TWIN_UPDATE_RESULT_STRINGS);
+DEFINE_ENUM_STRINGS(DEVICE_TWIN_UPDATE_TYPE, DEVICE_TWIN_UPDATE_TYPE_STRINGS)
+
 #define RESULT_OK                                  0
 #define INDEFINITE_TIME                            ((time_t)-1)
 #define DEFAULT_AUTH_STATE_CHANGED_TIMEOUT_SECS    60
@@ -229,10 +237,9 @@ static DEVICE_TWIN_UPDATE_RESULT get_device_twin_update_result_from(TWIN_REPORT_
 
 	switch (result)
 	{
-	case TWIN_REPORT_STATE_RESULT_OK:
+	case TWIN_REPORT_STATE_RESULT_SUCCESS:
 		device_result = DEVICE_TWIN_UPDATE_RESULT_OK;
 		break;
-	case TWIN_REPORT_STATE_RESULT_TIMEOUT:
 	case TWIN_REPORT_STATE_RESULT_ERROR:
 		device_result = DEVICE_TWIN_UPDATE_RESULT_ERROR;
 		break;
@@ -243,7 +250,7 @@ static DEVICE_TWIN_UPDATE_RESULT get_device_twin_update_result_from(TWIN_REPORT_
 	return device_result;
 }
 
-static void on_report_state_complete_callback(TWIN_REPORT_STATE_RESULT result, int status_code, void* context)
+static void on_report_state_complete_callback(TWIN_REPORT_STATE_RESULT result, TWIN_REPORT_STATE_REASON reason, int status_code, const void* context)
 {
 	if (context == NULL)
 	{
@@ -253,6 +260,8 @@ static void on_report_state_complete_callback(TWIN_REPORT_STATE_RESULT result, i
 	{
 		DEVICE_SEND_TWIN_UPDATE_CONTEXT* twin_ctx = (DEVICE_SEND_TWIN_UPDATE_CONTEXT*)context;
 		DEVICE_TWIN_UPDATE_RESULT device_result;
+		// TODO: add handling reason all the way upwards
+		(void)reason;
 
 		device_result = get_device_twin_update_result_from(result);
 
@@ -262,7 +271,7 @@ static void on_report_state_complete_callback(TWIN_REPORT_STATE_RESULT result, i
 	}
 }
 
-static void on_twin_state_update_callback(TWIN_UPDATE_TYPE update_type, const char* payload, size_t size, void* context)
+static void on_twin_state_update_callback(TWIN_UPDATE_TYPE update_type, const char* payload, size_t size, const void* context)
 {
 	if (payload == NULL || context == NULL)
 	{
@@ -1533,7 +1542,7 @@ int device_send_twin_update_async(DEVICE_HANDLE handle, CONSTBUFFER_HANDLE data,
 			twin_ctx->on_send_twin_update_complete_callback = on_send_twin_update_complete_callback;
 			twin_ctx->context = context;
 
-			if (twin_messenger_report_state_async(instance->twin_messenger_handle, data, on_report_state_complete_callback, (void*)twin_ctx) != 0)
+			if (twin_messenger_report_state_async(instance->twin_messenger_handle, data, on_report_state_complete_callback, (const void*)twin_ctx) != 0)
 			{
 				LogError("Cannot send twin update (failed creating TWIN messenger)");
 				free(twin_ctx);
